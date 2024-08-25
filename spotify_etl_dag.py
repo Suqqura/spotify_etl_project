@@ -1,16 +1,13 @@
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from datetime import datetime, timedelta
-import sys
-sys.path.insert(0, '/path_to_your_airflow_home/dags/spotify_project/scripts')
-
-from fetch_spotify_data import fetch_recent_tracks
-from transform_spotify_data import transform_spotify_data
+from spotify_project.scripts.fetch_spotify_data import fetch_recent_tracks
+from spotify_project.scripts.transform_spotify_data import transform_spotify_data
 
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'start_date': datetime(2023, 1, 1),
+    'start_date': datetime(2024, 8, 8),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 1,

@@ -14,98 +14,107 @@ CLIENT_ID = os.getenv('SPOTIPY_CLIENT_ID')
 CLIENT_SECRET = os.getenv('SPOTIPY_CLIENT_SECRET')
 REDIRECT_URI = os.getenv('SPOTIPY_REDIRECT_URI')
 
+# Paths
+DATA_PATH = '/home/hh/airflow/dags/spotify_project/data/'
+TOKEN_PATH = '/home/hh/airflow/dags/spotify_project/token.txt'
+
 # Create Spotipy client
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
     redirect_uri=REDIRECT_URI,
-    scope="user-read-recently-played user-top-read"
-))
-
-# How many tracks/artists to fetch
-LIMIT = 10
+    scope="user-read-recently-played user-top-read",
+    cache_path=TOKEN_PATH
+), requests_timeout=10)
 
 # Set your local timezone
 local_timezone = pytz.timezone('Europe/Helsinki')
 
-# Fetch the user's most recent tracks
 def fetch_recent_tracks():
     """Fetches the most recent tracks played by the user and saves them to a CSV file."""
-    results = sp.current_user_recently_played(limit=LIMIT)
-    tracks = results.get('items', [])
+    LIMIT = 50
 
-    if not tracks:
-        print("No recent tracks found.")
+    # Calculate the start of the current day
+    now = datetime.now(tz=local_timezone)
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_of_day_utc = start_of_day.astimezone(pytz.utc)
+
+    # Fetch all tracks played from the start of the day
+    try:
+        results = sp.current_user_recently_played(limit=LIMIT, after=int(start_of_day_utc.timestamp() * 1000))
+    except spotipy.exceptions.SpotifyException as e:
+        print(f"Spotify API error: {e}")
         return
 
-    # Convert data to DataFrame
     track_data = []
-    for item in tracks:
-        track = item['track']
-        primary_artist_id = track['artists'][0]['id']
+    while results:
+        tracks = results.get('items', [])
+        if not tracks:
+            break
+        
+        for item in tracks:
+            track = item['track']
+            primary_artist_id = track['artists'][0]['id']
+            artist_info = sp.artist(primary_artist_id)
+            genres = artist_info['genres']
 
-        # Fetch genres for the primary artist
-        artist_info = sp.artist(primary_artist_id)
-        genres = artist_info['genres']
+            played_at_utc = pd.to_datetime(item['played_at'])
+            played_at_local = played_at_utc.astimezone(local_timezone)
+            played_at_formatted = played_at_local.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Convert the UTC time to local time and format it
-        played_at_utc = pd.to_datetime(item['played_at'])
-        played_at_local = played_at_utc.astimezone(local_timezone)
-        played_at_formatted = played_at_local.strftime('%Y-%m-%d %H:%M:%S')
+            # Check if the track was played from a playlist (context may be None)
+            playlist_name = None
+            playlist_id = None
+            
+            if item['context'] and item['context']['type'] == 'playlist':
+                playlist_id = item['context']['uri'].split(':')[-1]  # Extract playlist ID from URI
+                playlist_name = sp.playlist(playlist_id)['name']  # Get playlist name via API
 
-        track_data.append({
-            'played_at': played_at_formatted,
-            'track_name': track['name'],
-            'artist_name': ', '.join([artist['name'] for artist in track['artists']]),
-            'album_name': track['album']['name'],
-            'genre': ', '.join(genres),
-            'popularity': track['popularity'],
-            'track_id': track['id'],
-        })
+            track_data.append({
+                'played_at': played_at_formatted,
+                'track_name': track['name'],
+                'artist_name': ', '.join([artist['name'] for artist in track['artists']]),
+                'track_duration_ms': track['duration_ms'] / 1000,
+                'popularity': track['popularity'],
+                'artist_genres': ', '.join(genres),
+
+                'album_name': track['album']['name'],
+                'album_release_date': track['album']['release_date'],
+                'album_id': track['album']['id'],
+                'track_id': track['id'],
+                'artist_ids': ', '.join([artist['id'] for artist in track['artists']]),
+
+                'playlist_name': playlist_name,  # Add playlist name (if available)
+                'playlist_id': playlist_id,  # Add playlist ID (if available)
+            })
+
+        if results['next']:
+            results = sp.next(results)
+        else:
+            break
 
     df = pd.DataFrame(track_data)
     
-    # Create data directory if it doesn't exist
-    if not os.path.exists('data'):
-        os.makedirs('data')
+    if not os.path.exists(DATA_PATH):
+        os.makedirs(DATA_PATH)
 
-    # Save data to CSV file
-    timestamp = datetime.now().strftime('%d%m%Y_%H%M%S') 
-    filename = f'data/recent_tracks_{timestamp}.csv'
-    df.to_csv(filename, index=False)
+    filename = os.path.join(DATA_PATH, "recent_tracks.csv")
+
+    # Append data to the existing CSV file, or create it if it doesn't exist
+    if os.path.exists(filename):
+        existing_data = pd.read_csv(filename)
+        combined_data = pd.concat([existing_data, df])
+        # Remove duplicates based on 'played_at' column
+        combined_data.drop_duplicates(subset=['played_at'], keep='first', inplace=True)
+        # Sort the data by 'played_at' in ascending order (oldest first, newest last)
+        combined_data['played_at'] = pd.to_datetime(combined_data['played_at'])
+        combined_data = combined_data.sort_values(by='played_at', ascending=True)
+        combined_data.to_csv(filename, mode='w', header=True, index=False)
+    else:
+        # If the file doesn't exist, create it and save the data
+        df.to_csv(filename, mode='w', header=True, index=False)
 
     print(f"Recent tracks saved to {filename}")
-    
-def fetch_top_artists():
-    """Fetches and prints the user's top artists across different time ranges."""
-    ranges = ['short_term', 'medium_term', 'long_term']
-
-    for sp_range in ranges:
-        print(f"Top artists for time range: {sp_range}")
-
-        # Fetch top artists for the specified time range
-        results = sp.current_user_top_artists(time_range=sp_range, limit=LIMIT)
-
-        # Print the rank and name of each artist
-        for i, item in enumerate(results['items']):
-            print(f"{i + 1}: {item['name']}")
-        print()  # Blank line for better readability between ranges
-
-def fetch_top_tracks():
-    """Fetches and prints the user's top tracks."""
-    print("Top tracks:")
-
-    # Fetch top tracks for the long-term time range
-    results = sp.current_user_top_tracks(time_range='long_term', limit=LIMIT)
-
-    # Print the rank, track name, and artist name
-    for i, item in enumerate(results['items']):
-        track_name = item['name']
-        artist_name = ', '.join([artist['name'] for artist in item['artists']])
-        print(f"{i + 1}: {track_name} by {artist_name}")
-    print()  # Blank line for better readability
 
 if __name__ == "__main__":
-    fetch_recent_tracks()  # Fetch and save the most recent tracks
-    fetch_top_artists()    # Print the user's top artists for different time ranges
-    fetch_top_tracks()     # Print the user's top tracks
+    fetch_recent_tracks()
