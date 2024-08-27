@@ -1,8 +1,11 @@
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from datetime import datetime, timedelta
-from spotify_project.scripts.fetch_spotify_data import fetch_recent_tracks
-from spotify_project.scripts.transform_spotify_data import transform_spotify_data
+from spotify_project.scripts.fetch_recent_tracks import fetch_recent_tracks
+from spotify_project.scripts.transform_recent_tracks import transform_recent_tracks
+from spotify_project.scripts.load_to_database import load_data_to_db
+from spotify_project.scripts.fetch_top_tracks import fetch_top_tracks
+from spotify_project.scripts.fetch_top_artists import fetch_top_artists
 
 default_args = {
     'owner': 'airflow',
@@ -21,16 +24,36 @@ dag = DAG(
     schedule_interval='@daily',
 )
 
-fetch_task = PythonOperator(
-    task_id='fetch_spotify_data',
+# Define tasks 
+fetch_top_tracks_task = PythonOperator(
+    task_id='fetch_top_tracks_long_term',
+    python_callable=fetch_top_tracks,
+    dag=dag,
+)
+
+fetch_top_artists_task = PythonOperator(
+    task_id='fetch_top_artists_long_term',
+    python_callable=fetch_top_artists,
+    dag=dag,
+)
+
+fetch_recent_task = PythonOperator(
+    task_id='fetch_recent_tracks',
     python_callable=fetch_recent_tracks,
     dag=dag,
 )
 
-transform_task = PythonOperator(
-    task_id='transform_spotify_data',
-    python_callable=transform_spotify_data,
+transform_recent_task = PythonOperator(
+    task_id='transform_recent_tracks',
+    python_callable=transform_recent_tracks,
     dag=dag,
 )
 
-fetch_task >> transform_task
+load_recent_task = PythonOperator(
+    task_id='load_data_to_db',
+    python_callable=load_data_to_db,
+    dag=dag,
+)
+
+# Define task dependencies
+fetch_top_tracks_task >> fetch_top_artists_task >> fetch_recent_task >> transform_recent_task >> load_recent_task
